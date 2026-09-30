@@ -14,21 +14,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # 軽量版（Vosk版）のコードを「v1-lite」タグで残す（まだ無いときだけ作る）
-      # タグはリリースとして作り、軽量版APK（build-2）も一緒に添付しておく
-      - name: Keep lite version tag (v1-lite)
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # 高精度版（HQ）か軽量版かで、APK名とリリース名を切り替える
+      - name: Decide release name
         run: |
-          if gh release view v1-lite -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v1-lite already exists"
+          if grep -q 'com.example.livetranslate.hq' app/build.gradle; then
+            {
+              echo "APK_NAME=LiveTranslateHQ.apk"
+              echo "RELEASE_TAG=hq-build-${{ github.run_number }}"
+              echo "RELEASE_NAME=ライブ翻訳HQ (ビルド ${{ github.run_number }})"
+              echo "MAKE_LATEST=true"
+            } >> "$GITHUB_ENV"
           else
-            gh release download build-2 -R "$GITHUB_REPOSITORY" -p LiveTranslate.apk -D lite
-            gh release create v1-lite lite/LiveTranslate.apk -R "$GITHUB_REPOSITORY" \
-              --target 8fd6e6a78a9a45fa3055cdc208a43e2f4b018a11 \
-              --title "ライブ翻訳 軽量版 (v1-lite)" \
-              --notes "Vosk音声認識の軽量版。ライブ翻訳HQとは別アプリなので同時にインストールできます。" \
-              --latest=false
+            {
+              echo "APK_NAME=LiveTranslate.apk"
+              echo "RELEASE_TAG=v1-lite"
+              echo "RELEASE_NAME=ライブ翻訳 軽量版 (v1-lite)"
+              echo "MAKE_LATEST=false"
+            } >> "$GITHUB_ENV"
           fi
 
       - uses: actions/setup-java@v5
@@ -39,6 +41,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Check model download URLs
+        if: env.MAKE_LATEST == 'true'
         run: |
           for u in \
             https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx \
@@ -54,21 +57,21 @@ jobs:
           ./gradlew assembleDebug --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk LiveTranslateHQ.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk "$APK_NAME"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LiveTranslateHQ.apk
-          path: LiveTranslateHQ.apk
+          name: ${{ env.APK_NAME }}
+          path: ${{ env.APK_NAME }}
 
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: hq-build-${{ github.run_number }}
+          tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: ライブ翻訳HQ (ビルド ${{ github.run_number }})
+          name: ${{ env.RELEASE_NAME }}
           body: |
-            下の「LiveTranslateHQ.apk」をタップするとダウンロードできます。
+            下の「${{ env.APK_NAME }}」をタップするとダウンロードできます。
             ブランチ: ${{ github.ref_name }} / コミット: ${{ github.sha }}
-          files: LiveTranslateHQ.apk
-          make_latest: true
+          files: ${{ env.APK_NAME }}
+          make_latest: ${{ env.MAKE_LATEST }}
