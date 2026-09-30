@@ -15,16 +15,20 @@ jobs:
       - uses: actions/checkout@v5
 
       # 軽量版（Vosk版）のコードを「v1-lite」タグで残す（まだ無いときだけ作る）
+      # タグはリリースとして作り、軽量版APK（build-2）も一緒に添付しておく
       - name: Keep lite version tag (v1-lite)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/v1-lite" >/dev/null 2>&1; then
+          if gh release view v1-lite -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "v1-lite already exists"
           else
-            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref=refs/tags/v1-lite \
-              -f sha=8fd6e6a78a9a45fa3055cdc208a43e2f4b018a11
+            gh release download build-2 -R "$GITHUB_REPOSITORY" -p LiveTranslate.apk -D lite
+            gh release create v1-lite lite/LiveTranslate.apk -R "$GITHUB_REPOSITORY" \
+              --target 8fd6e6a78a9a45fa3055cdc208a43e2f4b018a11 \
+              --title "ライブ翻訳 軽量版 (v1-lite)" \
+              --notes "Vosk音声認識の軽量版。ライブ翻訳HQとは別アプリなので同時にインストールできます。" \
+              --latest=false
           fi
 
       - uses: actions/setup-java@v5
