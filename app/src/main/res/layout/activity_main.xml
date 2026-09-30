@@ -62,6 +62,6 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
-            android:text="使い方：言語を選んでスタート → 許可を出す → YouTubeなどで動画を再生すると、画面下に字幕が出ます。字幕は指で上下に動かせます。初回は認識モデルと翻訳モデル（合計260MB程度）をダウンロードするのでWi-Fi推奨です。" />
+            android:text="使い方：言語を選んでスタート → 許可を出す → YouTubeなどで動画を再生すると、画面下に字幕が出ます。字幕は指で上下に動かせます。初回は認識モデルと翻訳モデル（合計70MB程度）をダウンロードするのでWi-Fi推奨です。" />
     </LinearLayout>
 </ScrollView>
