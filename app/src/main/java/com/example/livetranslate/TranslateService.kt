@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Process
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -26,10 +27,14 @@ import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
-import org.json.JSONObject
-import org.vosk.Model
-import org.vosk.Recognizer
-import java.io.File
+import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
+import com.k2fsa.sherpa.onnx.SileroVadModelConfig
+import com.k2fsa.sherpa.onnx.Vad
+import com.k2fsa.sherpa.onnx.VadModelConfig
 
 class TranslateService : Service() {
 
@@ -43,6 +48,10 @@ class TranslateService : Service() {
         private const val NOTIF_ID = 1
         private const val SAMPLE_RATE = 16000
         private const val TAG = "LiveTranslate"
+        // 話が途切れずに続くときは、この秒数で区切って字幕を出す
+        private const val MAX_SEGMENT_SEC = 5.0f
+        // 話している途中の原文プレビューを更新する間隔（サンプル数 = 0.8秒）
+        private const val PREVIEW_INTERVAL = SAMPLE_RATE * 8 / 10
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -111,14 +120,15 @@ class TranslateService : Service() {
         running = true
         Thread {
             try {
-                val modelDir = ModelManager.ensureModel(this, lang) { showOriginal(it) }
+                // 音声処理スレッドを優先して動かす
+                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+                val models = ModelManager.ensureModels(this) { showOriginal(it) }
                 if (!running) return@Thread
                 showOriginal("翻訳モデルを準備中…（初回のみ少し時間がかかります）")
                 prepareTranslator(lang)
                 if (!running) return@Thread
-                showOriginal("準備完了。動画を再生してください")
-                recognize(modelDir, lang)
-            } catch (e: Exception) {
+                recognize(models, lang)
+            } catch (e: Throwable) {
                 Log.e(TAG, "error", e)
                 showOriginal("エラー: ${e.message}")
             }
@@ -136,9 +146,54 @@ class TranslateService : Service() {
         translator = t
     }
 
+    /**
+     * Snapdragon 8 Elite / Dimensity 9600 Pro はどちらも高性能コアが多いので、
+     * 認識には4スレッドを使う（コア数が少ない端末では減らす）
+     */
+    private fun recognizerThreads(): Int =
+        (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 4)
+
+    private fun createRecognizer(models: ModelManager.Models, lang: String) = OfflineRecognizer(
+        config = OfflineRecognizerConfig(
+            featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
+            modelConfig = OfflineModelConfig(
+                senseVoice = OfflineSenseVoiceModelConfig(
+                    model = models.senseVoice.absolutePath,
+                    // 英語モードは "en"、中国語モードは "zh" に固定して誤判定を防ぐ
+                    language = lang,
+                    // 句読点や数字を読みやすい形で出力する
+                    useInverseTextNormalization = true
+                ),
+                tokens = models.tokens.absolutePath,
+                numThreads = recognizerThreads(),
+                provider = "cpu"
+            )
+        )
+    )
+
+    private fun createVad(models: ModelManager.Models) = Vad(
+        config = VadModelConfig(
+            sileroVadModelConfig = SileroVadModelConfig(
+                model = models.vad.absolutePath,
+                threshold = 0.5f,
+                minSilenceDuration = 0.3f,
+                minSpeechDuration = 0.25f,
+                windowSize = 512,
+                maxSpeechDuration = MAX_SEGMENT_SEC
+            ),
+            sampleRate = SAMPLE_RATE,
+            numThreads = 1,
+            provider = "cpu"
+        )
+    )
+
     @SuppressLint("MissingPermission")
-    private fun recognize(modelDir: File, lang: String) {
+    private fun recognize(models: ModelManager.Models, lang: String) {
         val mp = projection ?: return
+        showOriginal("音声認識エンジンを起動中…")
+        val recognizer = createRecognizer(models, lang)
+        val vad = createVad(models)
+
         val captureConfig = AudioPlaybackCaptureConfiguration.Builder(mp)
             .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
             .addMatchingUsage(AudioAttributes.USAGE_GAME)
@@ -152,54 +207,89 @@ class TranslateService : Service() {
         val minBuf = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
+        // 認識処理中も音声を取りこぼさないよう、約2秒分のバッファを確保する
         val record = AudioRecord.Builder()
             .setAudioFormat(format)
-            .setBufferSizeInBytes(maxOf(minBuf, 8192) * 2)
+            .setBufferSizeInBytes(maxOf(minBuf, SAMPLE_RATE * 2 * 2))
             .setAudioPlaybackCaptureConfig(captureConfig)
             .build()
         audioRecord = record
 
-        val model = Model(modelDir.absolutePath)
-        val recognizer = Recognizer(model, SAMPLE_RATE.toFloat())
-        // 話が長く続くとき、この文字数を超えたら区切って翻訳する
-        val forceLimit = if (lang == "zh") 30 else 100
-        val buffer = ByteArray(4096)
-        var lastPartial = ""
+        val chunk = ShortArray(SAMPLE_RATE / 10) // 0.1秒ずつ読む
+        val speech = FloatBuffer()
+        var sinceLastPreview = 0
 
         record.startRecording()
+        showOriginal("準備完了。動画を再生してください")
         try {
             while (running) {
-                val n = record.read(buffer, 0, buffer.size)
+                val n = record.read(chunk, 0, chunk.size)
                 if (n <= 0) continue
-                if (recognizer.acceptWaveForm(buffer, n)) {
-                    handleFinal(field(recognizer.result, "text"), lang)
-                    lastPartial = ""
+                val samples = FloatArray(n) { chunk[it] / 32768f }
+                vad.acceptWaveform(samples)
+
+                // 区切りが確定した発話を認識して翻訳する
+                var segmentDone = false
+                while (!vad.empty()) {
+                    val segment = vad.front()
+                    vad.pop()
+                    handleFinal(decode(recognizer, segment.samples), lang)
+                    segmentDone = true
+                }
+
+                if (segmentDone || !vad.isSpeechDetected()) {
+                    speech.clear()
+                    sinceLastPreview = 0
                 } else {
-                    val partial = clean(field(recognizer.partialResult, "partial"), lang)
-                    if (partial != lastPartial) {
-                        lastPartial = partial
-                        if (partial.isNotEmpty()) showOriginal(partial)
-                    }
-                    if (partial.length > forceLimit) {
-                        handleFinal(field(recognizer.finalResult, "text"), lang)
-                        lastPartial = ""
+                    // 話している途中は原文のプレビューを表示する
+                    speech.add(samples)
+                    sinceLastPreview += n
+                    if (sinceLastPreview >= PREVIEW_INTERVAL && speech.size >= SAMPLE_RATE / 2) {
+                        sinceLastPreview = 0
+                        val partial = clean(decode(recognizer, speech.toArray()), lang)
+                        if (partial.isNotEmpty()) showOriginal("$partial…")
                     }
                 }
             }
         } finally {
             runCatching { record.stop() }
             runCatching { record.release() }
-            runCatching { recognizer.close() }
-            runCatching { model.close() }
+            runCatching { vad.release() }
+            runCatching { recognizer.release() }
         }
     }
 
-    private fun field(json: String, key: String): String =
-        runCatching { JSONObject(json).optString(key, "") }.getOrDefault("")
+    private fun decode(recognizer: OfflineRecognizer, samples: FloatArray): String {
+        val stream = recognizer.createStream()
+        try {
+            stream.acceptWaveform(samples, SAMPLE_RATE)
+            recognizer.decode(stream)
+            return recognizer.getResult(stream).text
+        } finally {
+            stream.release()
+        }
+    }
 
-    // 中国語モデルは文字の間にスペースが入るので取り除く
-    private fun clean(text: String, lang: String): String =
-        if (lang == "zh") text.replace(" ", "").trim() else text.trim()
+    /** 伸び縮みする float 配列（発話途中の音声をためておく） */
+    private class FloatBuffer {
+        private var data = FloatArray(SAMPLE_RATE * 8)
+        var size = 0
+            private set
+
+        fun add(src: FloatArray) {
+            if (size + src.size > data.size) data = data.copyOf(maxOf(data.size * 2, size + src.size))
+            System.arraycopy(src, 0, data, size, src.size)
+            size += src.size
+        }
+
+        fun clear() { size = 0 }
+
+        fun toArray(): FloatArray = data.copyOf(size)
+    }
+
+    // SenseVoice は中国語の文字間に空白を入れないので、前後の空白だけ取り除く
+    @Suppress("UNUSED_PARAMETER")
+    private fun clean(text: String, lang: String): String = text.trim()
 
     private fun handleFinal(raw: String, lang: String) {
         val text = clean(raw, lang)

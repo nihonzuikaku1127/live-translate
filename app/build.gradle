@@ -3,6 +3,18 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// 音声認識ライブラリ sherpa-onnx（公式リリースのAARを初回ビルド時にダウンロードする）
+def sherpaOnnxVersion = '1.13.8'
+def sherpaOnnxAar = file("libs/sherpa-onnx-${sherpaOnnxVersion}.aar")
+if (!sherpaOnnxAar.exists()) {
+    sherpaOnnxAar.parentFile.mkdirs()
+    def url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${sherpaOnnxVersion}/sherpa-onnx-${sherpaOnnxVersion}.aar"
+    logger.lifecycle("Downloading ${url}")
+    def tmp = file("${sherpaOnnxAar.path}.part")
+    new URL(url).withInputStream { input -> tmp.withOutputStream { it << input } }
+    tmp.renameTo(sherpaOnnxAar)
+}
+
 android {
     namespace 'com.example.livetranslate'
     compileSdk 34
@@ -11,9 +23,10 @@ android {
         applicationId "com.example.livetranslate"
         minSdk 29          // Android 10以上（他アプリの音声取得に必要）
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
-        ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
+        versionCode 2
+        versionName "2.0"
+        // 使用端末（Snapdragon 8 Elite / Dimensity 9600 Pro）は64bit専用なので arm64 のみ入れる
+        ndk { abiFilters 'arm64-v8a' }
     }
 
     // 毎回同じ鍵で署名して、新しいAPKを上書きインストールできるようにする
@@ -43,9 +56,8 @@ android {
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'androidx.appcompat:appcompat:1.7.0'
-    // オフライン音声認識
-    implementation 'com.alphacephei:vosk-android:0.3.47@aar'
-    implementation 'net.java.dev.jna:jna:5.13.0@aar'
+    // オフライン音声認識（SenseVoice）と発話区切り（Silero VAD）
+    implementation files(sherpaOnnxAar)
     // オフライン翻訳（Google ML Kit）
     implementation 'com.google.mlkit:translate:17.0.3'
 }

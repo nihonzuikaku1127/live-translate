@@ -21,6 +21,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Check model download URLs
+        run: |
+          for u in \
+            https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx \
+            https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx; do
+            size=$(curl -sfL -o /dev/null -r 0-0 -w '%{http_code}' "$u") || { echo "NG: $u"; exit 1; }
+            echo "OK ($size): $u"
+          done
+
       - name: Build debug APK
         run: |
           chmod +x gradlew
