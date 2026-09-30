@@ -97,7 +97,7 @@ class TranslateService : Service() {
     private fun startForegroundNow() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "ライブ翻訳", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_ID, "ライブ翻訳HQ", NotificationManager.IMPORTANCE_LOW)
         )
         val stopIntent = PendingIntent.getService(
             this, 0,
@@ -106,7 +106,7 @@ class TranslateService : Service() {
         )
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle("ライブ翻訳 実行中")
+            .setContentTitle("ライブ翻訳HQ 実行中")
             .setContentText("「停止」を押すと終了します")
             .addAction(0, "停止", stopIntent)
             .setOngoing(true)

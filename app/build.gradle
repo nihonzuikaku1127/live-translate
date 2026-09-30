@@ -20,7 +20,7 @@ android {
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.example.livetranslate"
+        applicationId "com.example.livetranslate.hq"  // 軽量版(com.example.livetranslate)と共存させるため別ID
         minSdk 29          // Android 10以上（他アプリの音声取得に必要）
         targetSdk 34
         versionCode 2
