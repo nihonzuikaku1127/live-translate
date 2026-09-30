@@ -1,0 +1,49 @@
+name: Build debug APK
+
+on:
+  push:
+    branches: [main, 'claude/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk LiveTranslate.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveTranslate-apk
+          path: LiveTranslate.apk
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: ライブ翻訳 (ビルド ${{ github.run_number }})
+          body: |
+            下の「LiveTranslate.apk」をタップするとダウンロードできます。
+            ブランチ: ${{ github.ref_name }} / コミット: ${{ github.sha }}
+          files: LiveTranslate.apk
+          make_latest: true
