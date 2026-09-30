@@ -12,7 +12,7 @@
     <application
         android:allowBackup="false"
         android:icon="@android:drawable/ic_btn_speak_now"
-        android:label="ライブ翻訳"
+        android:label="ライブ翻訳HQ"
         android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
 
         <activity
